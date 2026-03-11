@@ -5,24 +5,25 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -36,74 +37,41 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlin.math.*
 
 @Composable
-fun RaunchScreen() {
-    // --- State ---
-    var isMenuVisible by remember { mutableStateOf(false) }
-    var isEditMode by remember { mutableStateOf(false) }
-    var touchOffset by remember { mutableStateOf(Offset.Zero) }
-    var centerPoint by remember { mutableStateOf(Offset.Zero) }
-    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+fun RaunchScreen(viewModel: RaunchViewModel = viewModel()) {
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
 
-    // Directories
-    val directories = listOf("FAVORITES", "ALL_APPS", "WORK", "MEDIA", "SYSTEM")
-    var currentDirIndex by remember { mutableIntStateOf(0) }
-
-    // Mock Apps
-    val directoryContent = remember {
-        mapOf(
-            "FAVORITES" to listOf("TERMINAL", "FILES", "BROWSER", "MEDIA", "SYSTEM"),
-            "ALL_APPS" to listOf("CALCULATOR", "CAMERA", "CLOCK", "CONTACTS", "EMAIL", "MAPS", "NOTES", "PHONE"),
-            "WORK" to listOf("SLACK", "JIRA", "OUTLOOK", "TEAMS", "DOCS"),
-            "MEDIA" to listOf("SPOTIFY", "YOUTUBE", "NETFLIX", "PHOTOS", "VLC"),
-            "SYSTEM" to listOf("SETTINGS", "LOGCAT", "SHELL", "STORAGE", "CPU")
+    val currentItems = viewModel.currentItems
+    val displayItems = remember(viewModel.scrollIndex, currentItems) {
+        val maxVisible = 5
+        currentItems.subList(
+            viewModel.scrollIndex,
+            (viewModel.scrollIndex + maxVisible).coerceAtMost(currentItems.size)
         )
     }
 
-    val currentItems = directoryContent[directories[currentDirIndex]] ?: emptyList()
-
-    // Scrolling & Selection
-    var scrollIndex by remember { mutableIntStateOf(0) }
-    val maxVisible = 5
-    val displayItems = remember(scrollIndex, currentItems) {
-        currentItems.subList(scrollIndex, (scrollIndex + maxVisible).coerceAtMost(currentItems.size))
-    }
-
-    var selectedSlotRight by remember { mutableIntStateOf(-1) }
-    var selectedSlotLeft by remember { mutableIntStateOf(-1) }
-    
-    val density = LocalDensity.current
-    val haptic = LocalHapticFeedback.current
+    // Temporary touch state for dragging
+    var touchOffset by remember { mutableStateOf(Offset.Zero) }
+    var centerPoint by remember { mutableStateOf(Offset.Zero) }
 
     // Auto-Scroll Logic
-    LaunchedEffect(selectedSlotRight) {
-        if (selectedSlotRight == 0 || selectedSlotRight == 6) {
+    LaunchedEffect(viewModel.selectedSlotRight) {
+        if (viewModel.selectedSlotRight == 0 || viewModel.selectedSlotRight == 6) {
             delay(800)
             while (true) {
-                if (selectedSlotRight == 0 && scrollIndex > 0) {
-                    scrollIndex--
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                } else if (selectedSlotRight == 6 && scrollIndex < currentItems.size - maxVisible) {
-                    scrollIndex++
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                } else break
+                if (viewModel.selectedSlotRight == 0) viewModel.scrollUp()
+                else if (viewModel.selectedSlotRight == 6) viewModel.scrollDown()
+                else break
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 delay(300)
             }
-        }
-    }
-
-    // Directory Switch Logic
-    LaunchedEffect(selectedSlotLeft) {
-        if (selectedSlotLeft in directories.indices && selectedSlotLeft != currentDirIndex) {
-            currentDirIndex = selectedSlotLeft
-            scrollIndex = 0
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         }
     }
 
@@ -111,58 +79,68 @@ fun RaunchScreen() {
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0D1117))
-            .onGloballyPositioned { containerSize = it.size }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { offset ->
-                        if (!isEditMode) {
-                            isMenuVisible = true
+                        if (!viewModel.isEditMode) {
+                            viewModel.isMenuVisible = true
                             touchOffset = offset
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
                     },
                     onDrag = { _, dragAmount ->
-                        if (isMenuVisible) {
+                        if (viewModel.isMenuVisible) {
                             touchOffset += dragAmount
                             val dx = touchOffset.x - centerPoint.x
                             val dy = touchOffset.y - centerPoint.y
                             val distance = sqrt(dx * dx + dy * dy)
-                            
+
                             if (distance > 25f) {
                                 val angle = atan2(dy, dx) * (180 / PI).toFloat()
-                                if (dx > 45) { // Confirmed App Selection Zone
-                                    selectedSlotLeft = -1 
+                                if (dx > 45) {
+                                    viewModel.selectedSlotLeft = -1
                                     val normalized = (angle + 70).coerceIn(0f, 140f)
-                                    selectedSlotRight = (normalized / 140f * 6).roundToInt()
-                                } else if (dx < -110) { // Confirmed Directory Selection Zone (Push to select)
-                                    selectedSlotRight = -1
+                                    viewModel.selectedSlotRight = (normalized / 140f * 6).roundToInt()
+                                } else if (dx < -110) {
+                                    viewModel.selectedSlotRight = -1
                                     val adjAngle = if (angle < 0) angle + 360 else angle
                                     val normalized = (220 - adjAngle).coerceIn(0f, 80f)
-                                    selectedSlotLeft = (normalized / 80f * (directories.size - 1)).roundToInt()
-                                } else if (dx < -30 && selectedSlotLeft == -1) {
-                                    // Initial "hover" when moving out from center
+                                    val newSlotLeft = (normalized / 80f * (viewModel.directories.size - 1)).roundToInt()
+                                    if (newSlotLeft != viewModel.selectedSlotLeft) {
+                                        viewModel.selectedSlotLeft = newSlotLeft
+                                        viewModel.switchDirectory(newSlotLeft)
+                                    }
+                                } else if (dx < -30 && viewModel.selectedSlotLeft == -1) {
                                     val adjAngle = if (angle < 0) angle + 360 else angle
                                     val normalized = (220 - adjAngle).coerceIn(0f, 80f)
-                                    selectedSlotLeft = (normalized / 80f * (directories.size - 1)).roundToInt()
+                                    val newSlotLeft = (normalized / 80f * (viewModel.directories.size - 1)).roundToInt()
+                                    viewModel.selectedSlotLeft = newSlotLeft
+                                    viewModel.switchDirectory(newSlotLeft)
                                 } else if (dx > -30 && dx < 45) {
-                                    // Central "Safe" Transition Zone: Latch the current side's selection
-                                    selectedSlotRight = -1
-                                    // selectedSlotLeft stays as-is (LATCHED) until we cross +45
+                                    viewModel.selectedSlotRight = -1
                                 }
                             } else {
-                                selectedSlotRight = -1
-                                selectedSlotLeft = -1
+                                viewModel.selectedSlotRight = -1
+                                viewModel.selectedSlotLeft = -1
                             }
                         }
                     },
-                    onDragEnd = { isMenuVisible = false; selectedSlotRight = -1; selectedSlotLeft = -1 },
-                    onDragCancel = { isMenuVisible = false; selectedSlotRight = -1; selectedSlotLeft = -1 }
+                    onDragEnd = {
+                        viewModel.isMenuVisible = false
+                        viewModel.selectedSlotRight = -1
+                        viewModel.selectedSlotLeft = -1
+                    },
+                    onDragCancel = {
+                        viewModel.isMenuVisible = false
+                        viewModel.selectedSlotRight = -1
+                        viewModel.selectedSlotLeft = -1
+                    }
                 )
             }
     ) {
         val triggerSize = 80.dp
         val startPadding = 130.dp
-        
+
         // --- Trigger Circle ---
         Box(
             modifier = Modifier
@@ -177,7 +155,7 @@ fun RaunchScreen() {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
-                            isEditMode = !isEditMode
+                            viewModel.isEditMode = !viewModel.isEditMode
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
                     )
@@ -186,14 +164,14 @@ fun RaunchScreen() {
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            if (isEditMode) Color(0xFFF85149).copy(alpha = 0.4f) else Color(0xFF58A6FF).copy(alpha = 0.4f),
+                            if (viewModel.isEditMode) Color(0xFFF85149).copy(alpha = 0.4f) else Color(0xFF58A6FF).copy(alpha = 0.4f),
                             Color.Transparent
                         )
                     )
                 )
-                .border(1.dp, if (isEditMode) Color(0xFFF85149) else Color(0xFF58A6FF).copy(alpha = 0.5f), CircleShape)
+                .border(1.dp, if (viewModel.isEditMode) Color(0xFFF85149) else Color(0xFF58A6FF).copy(alpha = 0.5f), CircleShape)
         ) {
-            if (isEditMode) {
+            if (viewModel.isEditMode) {
                 Icon(
                     Icons.Default.Edit, contentDescription = null,
                     tint = Color.White, modifier = Modifier.size(24.dp).align(Alignment.Center)
@@ -203,7 +181,7 @@ fun RaunchScreen() {
 
         // --- Main Launch Menu ---
         AnimatedVisibility(
-            visible = isMenuVisible,
+            visible = viewModel.isMenuVisible,
             enter = fadeIn() + scaleIn(initialScale = 0.5f),
             exit = fadeOut() + scaleOut(targetScale = 0.5f)
         ) {
@@ -211,35 +189,31 @@ fun RaunchScreen() {
             val centerDpY = with(density) { centerPoint.y.toDp() }
 
             Box(modifier = Modifier.fillMaxSize()) {
-                
-                // --- Right Panel (Apps) ---
                 TechPanel(
                     centerDpX = centerDpX, centerDpY = centerDpY,
-                    isRight = true, title = directories[currentDirIndex]
+                    isRight = true, title = viewModel.currentDir?.name?.replace("_", " ") ?: ""
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TechMenuItem(label = "UP", icon = Icons.Default.KeyboardArrowUp, isSelected = selectedSlotRight == 0, isEnabled = scrollIndex > 0)
+                        TechMenuItem(label = "UP", icon = Icons.Default.KeyboardArrowUp, isSelected = viewModel.selectedSlotRight == 0, isEnabled = viewModel.scrollIndex > 0)
                         displayItems.forEachIndexed { i, label ->
-                            TechMenuItem(label = label, isSelected = selectedSlotRight == i + 1)
+                            TechMenuItem(label = label, isSelected = viewModel.selectedSlotRight == i + 1)
                         }
-                        TechMenuItem(label = "DOWN", icon = Icons.Default.KeyboardArrowDown, isSelected = selectedSlotRight == 6, isEnabled = scrollIndex < currentItems.size - maxVisible)
+                        TechMenuItem(label = "DOWN", icon = Icons.Default.KeyboardArrowDown, isSelected = viewModel.selectedSlotRight == 6, isEnabled = viewModel.scrollIndex < currentItems.size - 5)
                     }
                 }
 
-                // --- Left Panel (Directories) ---
                 TechPanel(
                     centerDpX = centerDpX, centerDpY = centerDpY,
                     isRight = false, title = "DIR",
                     panelWidth = 120.dp
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.End) {
-                        directories.forEachIndexed { i, label ->
-                            val isActive = i == currentDirIndex
+                        viewModel.directories.forEachIndexed { i, label ->
                             TechMenuItem(
-                                label = label,
-                                isSelected = selectedSlotLeft == i,
+                                label = label.name.replace("_", " "),
+                                isSelected = viewModel.selectedSlotLeft == i,
                                 isRight = false,
-                                isPrimary = isActive,
+                                isPrimary = i == viewModel.currentDirIndex,
                                 itemWidth = 100.dp
                             )
                         }
@@ -250,16 +224,187 @@ fun RaunchScreen() {
 
         // --- Management Overlay ---
         AnimatedVisibility(
-            visible = isEditMode,
+            visible = viewModel.isEditMode,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut()
         ) {
-            ManagementOverlay(onClose = { isEditMode = false })
+            ManagementOverlay(
+                directories = viewModel.directories,
+                onUpdate = { viewModel.updateDirectories(it) },
+                onClose = { viewModel.isEditMode = false }
+            )
         }
-        
-        // --- Lean Indicator ---
-        if (isMenuVisible) {
+
+        if (viewModel.isMenuVisible) {
             LeanIndicator(centerPoint, touchOffset, density)
+        }
+    }
+}
+
+@Composable
+fun ManagementOverlay(
+    directories: List<Directory>,
+    onUpdate: (List<Directory>) -> Unit,
+    onClose: () -> Unit
+) {
+    var editingDirIndex by remember { mutableStateOf<Int?>(null) }
+    var newDirName by remember { mutableStateOf("") }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D1117).copy(alpha = 0.98f)).padding(16.dp)) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("DIRECTORY_MANAGER", color = Color(0xFFF85149), fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp)
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, null, tint = Color.White)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextField(
+                    value = newDirName,
+                    onValueChange = { newDirName = it },
+                    placeholder = { Text("NEW_DIR_NAME", color = Color.Gray) },
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        unfocusedContainerColor = Color(0xFF161B22),
+                        focusedContainerColor = Color(0xFF161B22),
+                        unfocusedTextColor = Color.White,
+                        focusedTextColor = Color.White
+                    )
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        if (newDirName.isNotBlank()) {
+                            onUpdate(directories + Directory(newDirName.uppercase().replace(" ", "_"), emptyList()))
+                            newDirName = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF238636))
+                ) {
+                    Icon(Icons.Default.Add, null)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(directories.size) { index ->
+                    val dir = directories[index]
+                    DirectoryEditItem(
+                        directory = dir,
+                        isLocked = dir.name == ALL_APPS_DIR,
+                        onDelete = {
+                            onUpdate(directories.toMutableList().apply { removeAt(index) })
+                        },
+                        onEditApps = {
+                            editingDirIndex = index
+                        }
+                    )
+                }
+            }
+        }
+
+        if (editingDirIndex != null) {
+            val index = editingDirIndex!!
+            AppSelectionOverlay(
+                directory = directories[index],
+                onClose = { editingDirIndex = null },
+                onUpdate = { updatedDir ->
+                    val newList = directories.toMutableList()
+                    newList[index] = updatedDir
+                    onUpdate(newList)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun DirectoryEditItem(
+    directory: Directory,
+    isLocked: Boolean,
+    onDelete: () -> Unit,
+    onEditApps: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF161B22), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFF30363D), RoundedCornerShape(8.dp))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(directory.name.replace("_", " "), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                if (isLocked) {
+                    Text("SYSTEM DEFAULT", color = Color(0xFF58A6FF), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                } else {
+                    Text("${directory.apps.size} APPS", color = Color.Gray, fontSize = 12.sp)
+                }
+            }
+            if (!isLocked) {
+                IconButton(onClick = onEditApps) {
+                    Icon(Icons.Default.Settings, null, tint = Color(0xFF58A6FF))
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, null, tint = Color(0xFFF85149))
+                }
+            } else {
+                Icon(Icons.Default.Lock, null, tint = Color.Gray, modifier = Modifier.padding(12.dp).size(20.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun AppSelectionOverlay(
+    directory: Directory,
+    onClose: () -> Unit,
+    onUpdate: (Directory) -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D1117)).padding(16.dp)) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("EDIT: ${directory.name}", color = Color(0xFF58A6FF), fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(mockAvailableApps) { app ->
+                    val isSelected = directory.apps.contains(app)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val newApps = if (isSelected) {
+                                    directory.apps - app
+                                } else {
+                                    directory.apps + app
+                                }
+                                onUpdate(directory.copy(apps = newApps))
+                            }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = null,
+                            colors = CheckboxDefaults.colors(checkedColor = Color(0xFF58A6FF))
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(app, color = if (isSelected) Color.White else Color.Gray)
+                    }
+                }
+            }
         }
     }
 }
@@ -275,7 +420,7 @@ fun TechPanel(
 ) {
     val xOffset = if (isRight) centerDpX + 45.dp else centerDpX - 45.dp - panelWidth
     
-    Box(modifier = Modifier.offset(x = xOffset, y = centerDpY - 180.dp)) {
+    Box(modifier = Modifier.offset(x = xOffset, y = centerDpY - 240.dp)) {
         Canvas(modifier = Modifier.size(panelWidth, 360.dp)) {
             val path = androidx.compose.ui.graphics.Path().apply {
                 if (isRight) {
@@ -348,21 +493,6 @@ fun TechMenuItem(
 }
 
 @Composable
-fun ManagementOverlay(onClose: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D1117).copy(alpha = 0.95f)).padding(32.dp)) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("DIRECTORY MANAGER", color = Color(0xFFF85149), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(modifier = Modifier.weight(1f))
-                Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.pointerInput(Unit) { detectTapGestures { onClose() } })
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("Edit directories, rename them, or drag apps to reorder.", color = Color(0xFF8B949E), fontSize = 14.sp)
-        }
-    }
-}
-
-@Composable
 fun LeanIndicator(center: Offset, touch: Offset, density: androidx.compose.ui.unit.Density) {
     val indicatorSize = 60.dp
     Box(
@@ -378,10 +508,4 @@ fun LeanIndicator(center: Offset, touch: Offset, density: androidx.compose.ui.un
             drawCircle(Color(0xFFF85149).copy(alpha = 0.2f), size.minDimension / 2, style = Stroke(1.dp.toPx()))
         }
     }
-}
-
-@Preview
-@Composable
-fun PreviewRaunchScreen() {
-    RaunchScreen()
 }
